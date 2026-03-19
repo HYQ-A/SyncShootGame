@@ -39,6 +39,25 @@ public class SyncPlayerController : NetworkBehaviour
     // 射击冷却
     private float nextFireTime;
 
+    // ===== 本地预测相关 =====
+    // 输入缓冲区（环形）
+    private ClientInputMessage[] inputBuffer = new ClientInputMessage[128];
+    // 最后被服务器确认的输入序号
+    private uint lastAckedSequence = 0;
+
+    // ===== 渲染插值相关 =====
+    // 逻辑位置（Tick驱动，30Hz更新）
+    private Vector3 logicPositionPrev;   // 上一Tick的逻辑位置
+    private Vector3 logicPositionCurr;   // 当前Tick的逻辑位置
+    // 远程玩家插值（独立计时器，不依赖 TickAlpha）
+    private Vector3 remotePositionPrev;
+    private Vector3 remotePositionCurr;
+    private float remoteRotationYPrev;
+    private float remoteRotationYCurr;
+    private bool hasRemoteState = false;
+    private float remoteInterpTimer = 0f;
+    private float remoteInterpDuration = 1f / 30f; // 与服务端 Tick 间隔一致
+
     void Start()
     {
         controller = GetComponent<CharacterController>();
@@ -77,6 +96,16 @@ public class SyncPlayerController : NetworkBehaviour
             fp.transform.localPosition = new Vector3(0, 0.5f, 0.8f);
             firePoint = fp.transform;
         }
+
+        // 初始化逻辑位置
+        logicPositionPrev = transform.position;
+        logicPositionCurr = transform.position;
+
+        // 远程玩家初始化
+        remotePositionPrev = transform.position;
+        remotePositionCurr = transform.position;
+        remoteRotationYPrev = transform.eulerAngles.y;
+        remoteRotationYCurr = transform.eulerAngles.y;
     }
 
     void OnDestroy()
@@ -105,19 +134,37 @@ public class SyncPlayerController : NetworkBehaviour
         // 2. 发送到服务端
         SendInputToServer(input);
 
-        // 3. 【阶段4将添加】本地预测执行
-        // ApplyInputLocally(input);
+        // 3. 本地预测执行（立即移动，不等服务器回包）
+        ApplyInputLocally(input);
     }
 
     /// <summary>
-    /// Update中处理瞄准（需要更平滑的响应）
+    /// 每帧渲染：插值 + 瞄准
     /// </summary>
     void Update()
     {
-        if (!isLocalPlayer) return;
+        float alpha = TickManager.Instance?.GetTickAlpha() ?? 0f;
 
-        // 瞄准需要每帧更新，不能只在Tick中
-        HandleAiming();
+        if (isLocalPlayer)
+        {
+            // 本地玩家：在前后两个逻辑位置之间插值渲染
+            Vector3 renderPos = Vector3.Lerp(logicPositionPrev, logicPositionCurr, alpha);
+            controller.enabled = false;
+            transform.position = renderPos;
+            controller.enabled = true;
+
+            // 瞄准需要每帧更新，不能只在Tick中
+            HandleAiming();
+        }
+        else if (hasRemoteState)
+        {
+            // 远程玩家：用独立计时器插值，不依赖 TickAlpha
+            remoteInterpTimer += Time.deltaTime;
+            float t = Mathf.Clamp01(remoteInterpTimer / remoteInterpDuration);
+            transform.position = Vector3.Lerp(remotePositionPrev, remotePositionCurr, t);
+            float rotY = Mathf.LerpAngle(remoteRotationYPrev, remoteRotationYCurr, t);
+            transform.rotation = Quaternion.Euler(0, rotY, 0);
+        }
     }
 
     /// <summary>
@@ -203,7 +250,24 @@ public class SyncPlayerController : NetworkBehaviour
     }
 
     /// <summary>
-    /// 客户端：收到服务端状态广播，应用到所有玩家对象
+    /// 本地预测执行：更新逻辑位置，不直接移动 Transform（由 Update 插值渲染）
+    /// </summary>
+    void ApplyInputLocally(ClientInputMessage input)
+    {
+        // 存储输入到环形缓冲区（用于服务器校正时重演）
+        inputBuffer[input.sequence % inputBuffer.Length] = input;
+
+        // 保存上一帧逻辑位置（用于插值）
+        logicPositionPrev = logicPositionCurr;
+
+        // 计算新的逻辑位置
+        Vector3 moveDir = new Vector3(input.moveX, 0, input.moveY).normalized;
+        float tickInterval = TickManager.Instance != null ? TickManager.Instance.TickInterval : (1f / 30f);
+        logicPositionCurr += moveDir * moveSpeed * tickInterval;
+    }
+
+    /// <summary>
+    /// 客户端：收到服务端状态广播，更新逻辑位置（由 Update 插值渲染）
     /// </summary>
     void OnServerStateReceived(ServerStateMessage msg)
     {
@@ -211,114 +275,50 @@ public class SyncPlayerController : NetworkBehaviour
 
         foreach (var playerState in msg.players)
         {
-            // 找到对应的网络对象
-            if (!NetworkClient.spawned.TryGetValue(playerState.netId, out NetworkIdentity identity))
-                continue;
-
-            if (identity == null) continue;
-
             if (playerState.netId == netId)
             {
-                // 本地玩家：应用服务器权威位置（Phase 3 直接覆盖）
-                // Phase 4 启用后改为预测校验 + 回滚
-                transform.position = playerState.position;
+                // === 本地玩家：服务端和解（Server Reconciliation） ===
+                lastAckedSequence = msg.yourLastProcessedInput;
+
+                // 1. 以服务端权威位置为基准
+                Vector3 reconciledPos = playerState.position;
+
+                // 2. 重演所有未被服务端确认的输入
+                float tickInterval = TickManager.Instance != null ? TickManager.Instance.TickInterval : (1f / 30f);
+                for (uint seq = lastAckedSequence + 1; seq < inputSequence; seq++)
+                {
+                    ClientInputMessage buffered = inputBuffer[seq % inputBuffer.Length];
+                    if (buffered.sequence != seq) break; // 缓冲区已被覆盖，停止重演
+
+                    Vector3 moveDir = new Vector3(buffered.moveX, 0, buffered.moveY).normalized;
+                    reconciledPos += moveDir * moveSpeed * tickInterval;
+                }
+
+                // 3. 只修正 logicPositionCurr，不动 logicPositionPrev
+                //    保留 prev→curr 的插值窗口，Update 才能平滑 Lerp
+                logicPositionCurr = reconciledPos;
                 // 旋转由 HandleAiming() 本地控制，不覆盖
             }
             else
             {
-                // 其他玩家：应用位置和旋转
-                identity.transform.position = playerState.position;
-                identity.transform.rotation = Quaternion.Euler(0, playerState.rotationY, 0);
-            }
-        }
-    }
+                // === 远程玩家：找到对应网络对象，更新其插值缓冲 ===
+                if (!NetworkClient.spawned.TryGetValue(playerState.netId, out NetworkIdentity identity))
+                    continue;
+                if (identity == null) continue;
 
-    // ==========================================
-    // 阶段4将添加的功能（先注释）
-    // ==========================================
-
-    /*
-    // 输入缓冲区
-    private ClientInputMessage[] inputBuffer = new ClientInputMessage[128];
-    
-    // 状态缓冲区
-    private PlayerStateData[] stateBuffer = new PlayerStateData[128];
-    
-    // 最后确认的输入序号
-    private uint lastAckedSequence = 0;
-
-    /// <summary>
-    /// 本地预测执行
-    /// </summary>
-    void ApplyInputLocally(ClientInputMessage input)
-    {
-        // 存储输入
-        inputBuffer[input.sequence % inputBuffer.Length] = input;
-        
-        // 执行移动
-        Vector3 moveDir = new Vector3(input.moveX, 0, input.moveY);
-        controller.Move(moveDir * moveSpeed * TickManager.Instance.TickInterval);
-        
-        // 存储状态
-        stateBuffer[input.sequence % stateBuffer.Length] = new PlayerStateData
-        {
-            position = transform.position,
-            rotationY = transform.eulerAngles.y
-        };
-    }
-
-    /// <summary>
-    /// 收到服务端状态时校验
-    /// </summary>
-    void OnServerStateReceived(ServerStateMessage msg)
-    {
-        // 找到自己的状态
-        foreach (var playerState in msg.players)
-        {
-            if (playerState.netId == netId)
-            {
-                // 获取对应的本地预测状态
-                uint seq = msg.yourLastProcessedInput;
-                PlayerStateData predicted = stateBuffer[seq % stateBuffer.Length];
-                
-                // 对比
-                float error = Vector3.Distance(predicted.position, playerState.position);
-                
-                if (error > 0.01f)
+                SyncPlayerController otherCtrl = identity.GetComponent<SyncPlayerController>();
+                if (otherCtrl != null)
                 {
-                    // 预测错误，执行回滚
-                    Rollback(seq, playerState);
+                    // 从当前视觉位置开始插值，保证视觉连续性
+                    otherCtrl.remotePositionPrev = identity.transform.position;
+                    otherCtrl.remotePositionCurr = playerState.position;
+                    otherCtrl.remoteRotationYPrev = identity.transform.eulerAngles.y;
+                    otherCtrl.remoteRotationYCurr = playerState.rotationY;
+                    otherCtrl.remoteInterpTimer = 0f; // 重置计时器
+                    otherCtrl.hasRemoteState = true;
                 }
-                
-                lastAckedSequence = seq;
-                break;
             }
         }
     }
 
-    /// <summary>
-    /// 回滚并重演
-    /// </summary>
-    void Rollback(uint fromSequence, PlayerStateData correctState)
-    {
-        // 1. 恢复到正确状态
-        transform.position = correctState.position;
-        transform.rotation = Quaternion.Euler(0, correctState.rotationY, 0);
-        
-        // 2. 重演后续输入
-        for (uint seq = fromSequence + 1; seq < inputSequence; seq++)
-        {
-            ClientInputMessage input = inputBuffer[seq % inputBuffer.Length];
-            
-            Vector3 moveDir = new Vector3(input.moveX, 0, input.moveY);
-            controller.Move(moveDir * moveSpeed * TickManager.Instance.TickInterval);
-            
-            stateBuffer[seq % stateBuffer.Length] = new PlayerStateData
-            {
-                position = transform.position,
-                rotationY = transform.eulerAngles.y
-            };
-        }
-    }
-    */
 }

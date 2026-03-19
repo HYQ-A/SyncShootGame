@@ -48,6 +48,7 @@ public class GameNetworkManager : NetworkManager
     public override void Awake()
     {
         base.Awake();
+        Application.runInBackground = true;
         singleton = this;
     }
 
@@ -237,9 +238,6 @@ public class GameNetworkManager : NetworkManager
         }
 
         serverPlayers[netId] = player;
-
-        // 同步到实际的玩家对象
-        SyncPlayerTransform(netId, player);
     }
 
     /// <summary>
