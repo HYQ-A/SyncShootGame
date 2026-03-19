@@ -49,14 +49,14 @@ public class SyncPlayerController : NetworkBehaviour
     // 逻辑位置（Tick驱动，30Hz更新）
     private Vector3 logicPositionPrev;   // 上一Tick的逻辑位置
     private Vector3 logicPositionCurr;   // 当前Tick的逻辑位置
-    // 远程玩家插值（独立计时器，不依赖 TickAlpha）
-    private Vector3 remotePositionPrev;
-    private Vector3 remotePositionCurr;
-    private float remoteRotationYPrev;
-    private float remoteRotationYCurr;
+    // 远程玩家：指数平滑（只记录目标，每帧平滑逼近）
+    private Vector3 remoteTargetPosition;
+    private float remoteTargetRotationY;
     private bool hasRemoteState = false;
-    private float remoteInterpTimer = 0f;
-    private float remoteInterpDuration = 1f / 30f; // 与服务端 Tick 间隔一致
+
+    [Header("===== 远程同步设置 =====")]
+    [Tooltip("远程玩家平滑追赶速度（越大越快，10-20 为推荐值）")]
+    public float remoteSmoothSpeed = 15f;
 
     void Start()
     {
@@ -102,10 +102,8 @@ public class SyncPlayerController : NetworkBehaviour
         logicPositionCurr = transform.position;
 
         // 远程玩家初始化
-        remotePositionPrev = transform.position;
-        remotePositionCurr = transform.position;
-        remoteRotationYPrev = transform.eulerAngles.y;
-        remoteRotationYCurr = transform.eulerAngles.y;
+        remoteTargetPosition = transform.position;
+        remoteTargetRotationY = transform.eulerAngles.y;
     }
 
     void OnDestroy()
@@ -158,12 +156,13 @@ public class SyncPlayerController : NetworkBehaviour
         }
         else if (hasRemoteState)
         {
-            // 远程玩家：用独立计时器插值，不依赖 TickAlpha
-            remoteInterpTimer += Time.deltaTime;
-            float t = Mathf.Clamp01(remoteInterpTimer / remoteInterpDuration);
-            transform.position = Vector3.Lerp(remotePositionPrev, remotePositionCurr, t);
-            float rotY = Mathf.LerpAngle(remoteRotationYPrev, remoteRotationYCurr, t);
-            transform.rotation = Quaternion.Euler(0, rotY, 0);
+            // 远程玩家：指数平滑逼近目标
+            // 每帧从当前位置向目标靠近一个比例，天然抗消息突发
+            float t = remoteSmoothSpeed * Time.deltaTime;
+            transform.position = Vector3.Lerp(transform.position, remoteTargetPosition, t);
+            float currentRotY = transform.eulerAngles.y;
+            float newRotY = Mathf.LerpAngle(currentRotY, remoteTargetRotationY, t);
+            transform.rotation = Quaternion.Euler(0, newRotY, 0);
         }
     }
 
@@ -277,7 +276,11 @@ public class SyncPlayerController : NetworkBehaviour
         {
             if (playerState.netId == netId)
             {
-                // === 本地玩家：服务端和解（Server Reconciliation） ===
+                // Host 玩家（同时是服务端）：预测 = 权威，无需和解
+                // Mirror loopback 有一帧延迟，和解反而会用过时位置拉回 curr
+                if (isServer) continue;
+
+                // === 纯客户端：服务端和解（Server Reconciliation） ===
                 lastAckedSequence = msg.yourLastProcessedInput;
 
                 // 1. 以服务端权威位置为基准
@@ -288,16 +291,14 @@ public class SyncPlayerController : NetworkBehaviour
                 for (uint seq = lastAckedSequence + 1; seq < inputSequence; seq++)
                 {
                     ClientInputMessage buffered = inputBuffer[seq % inputBuffer.Length];
-                    if (buffered.sequence != seq) break; // 缓冲区已被覆盖，停止重演
+                    if (buffered.sequence != seq) break;
 
                     Vector3 moveDir = new Vector3(buffered.moveX, 0, buffered.moveY).normalized;
                     reconciledPos += moveDir * moveSpeed * tickInterval;
                 }
 
                 // 3. 只修正 logicPositionCurr，不动 logicPositionPrev
-                //    保留 prev→curr 的插值窗口，Update 才能平滑 Lerp
                 logicPositionCurr = reconciledPos;
-                // 旋转由 HandleAiming() 本地控制，不覆盖
             }
             else
             {
@@ -309,12 +310,10 @@ public class SyncPlayerController : NetworkBehaviour
                 SyncPlayerController otherCtrl = identity.GetComponent<SyncPlayerController>();
                 if (otherCtrl != null)
                 {
-                    // 从当前视觉位置开始插值，保证视觉连续性
-                    otherCtrl.remotePositionPrev = identity.transform.position;
-                    otherCtrl.remotePositionCurr = playerState.position;
-                    otherCtrl.remoteRotationYPrev = identity.transform.eulerAngles.y;
-                    otherCtrl.remoteRotationYCurr = playerState.rotationY;
-                    otherCtrl.remoteInterpTimer = 0f; // 重置计时器
+                    // 只更新目标，不重置任何计时器
+                    // 指数平滑会自动从当前视觉位置平滑追赶到目标
+                    otherCtrl.remoteTargetPosition = playerState.position;
+                    otherCtrl.remoteTargetRotationY = playerState.rotationY;
                     otherCtrl.hasRemoteState = true;
                 }
             }

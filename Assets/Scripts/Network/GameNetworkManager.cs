@@ -49,6 +49,10 @@ public class GameNetworkManager : NetworkManager
     {
         base.Awake();
         Application.runInBackground = true;
+        // 关闭垂直同步 + 设置帧率下限，防止 Windows 对非活动窗口降帧
+        // 导致 TickManager 一帧内补偿大量 Tick 造成消息突发
+        QualitySettings.vSyncCount = 0;
+        Application.targetFrameRate = 60;
         singleton = this;
     }
 
@@ -190,13 +194,19 @@ public class GameNetworkManager : NetworkManager
     /// <summary>
     /// 服务端：每个Tick执行
     /// </summary>
+    // 缓存key列表，避免每Tick分配
+    private List<uint> tempNetIds = new List<uint>();
+
     private void OnServerTick(uint tick)
     {
         // 1. 处理所有玩家的输入
-        foreach (var kvp in serverPlayers)
-        {
-            uint netId = kvp.Key;
+        // 注意：不能直接 foreach serverPlayers，因为 ProcessPlayerInput 会修改字典值，
+        // C# Dictionary 在遍历期间被修改会抛出 InvalidOperationException
+        tempNetIds.Clear();
+        tempNetIds.AddRange(serverPlayers.Keys);
 
+        foreach (uint netId in tempNetIds)
+        {
             if (inputQueues.ContainsKey(netId))
             {
                 while (inputQueues[netId].Count > 0)
