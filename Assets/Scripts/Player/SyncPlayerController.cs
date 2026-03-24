@@ -39,6 +39,9 @@ public class SyncPlayerController : NetworkBehaviour
     // 射击冷却
     private float nextFireTime;
 
+    // 子弹预制体缓存（从 Resources 加载）
+    private GameObject bulletPrefabCache;
+
     // ===== 本地预测相关 =====
     // 输入缓冲区（环形）
     private ClientInputMessage[] inputBuffer = new ClientInputMessage[128];
@@ -97,6 +100,16 @@ public class SyncPlayerController : NetworkBehaviour
             firePoint = fp.transform;
         }
 
+        // 缓存子弹预制体（从 Resources/Prefabs/Bullet 加载一次）
+        if (bulletPrefab == null)
+        {
+            bulletPrefabCache = Resources.Load<GameObject>("Prefabs/Bullet");
+        }
+        else
+        {
+            bulletPrefabCache = bulletPrefab;
+        }
+
         // 初始化逻辑位置
         logicPositionPrev = transform.position;
         logicPositionCurr = transform.position;
@@ -145,6 +158,15 @@ public class SyncPlayerController : NetworkBehaviour
 
         // 3. 本地预测执行（立即移动，不等服务器回包）
         ApplyInputLocally(input);
+
+        // 4. 本地射击预测：立即生成视觉子弹，不等服务器
+        //    这样玩家点击鼠标后零延迟看到子弹飞出
+        //    服务器的 SpawnBulletMessage 到达后，客户端通过 OnClientSpawnBullet 再生成一颗
+        //    （两颗子弹会同时飞行，但间距极小，视觉上可接受）
+        if (input.isShooting)
+        {
+            SpawnLocalPredictedBullet();
+        }
     }
 
     /// <summary>
@@ -256,6 +278,28 @@ public class SyncPlayerController : NetworkBehaviour
         if (NetworkClient.isConnected)
         {
             NetworkClient.Send(input);
+        }
+    }
+
+    /// <summary>
+    /// 本地射击预测：立即在客户端生成一颗视觉子弹
+    /// 让玩家点击鼠标后零延迟看到子弹飞出（不等服务器往返）
+    /// </summary>
+    void SpawnLocalPredictedBullet()
+    {
+        if (bulletPrefabCache == null) return;
+
+        Vector3 forward = transform.forward;
+        Vector3 firePos = firePoint != null ? firePoint.position : transform.position + transform.forward * 0.8f;
+
+        Quaternion rotation = Quaternion.LookRotation(forward);
+        GameObject bulletObj = Instantiate(bulletPrefabCache, firePos, rotation);
+
+        SimpleBullet bullet = bulletObj.GetComponent<SimpleBullet>();
+        if (bullet != null)
+        {
+            bullet.direction = forward;
+            bullet.speed = bulletSpeed;
         }
     }
 

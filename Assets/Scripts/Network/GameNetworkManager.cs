@@ -19,6 +19,21 @@ public struct ServerPlayerData
 }
 
 /// <summary>
+/// 服务端子弹数据（服务端内部使用）
+/// 服务器权威：子弹的位置、碰撞检测全部由服务器计算，
+/// 客户端只负责视觉渲染。
+/// </summary>
+public struct ServerBulletData
+{
+    public uint bulletId;       // 唯一ID，用于服务器↔客户端对应同一颗子弹
+    public uint ownerNetId;     // 发射者，用于判定"不打自己"
+    public Vector3 position;    // 当前位置（服务器每Tick更新）
+    public Vector3 direction;   // 飞行方向（单位向量，生成后不变）
+    public float speed;         // 飞行速度
+    public float spawnTime;     // 生成时间，用于超时销毁
+}
+
+/// <summary>
 /// 客户端状态接收器（静态事件，供其他脚本订阅）
 /// </summary>
 public static class ClientStateReceiver
@@ -44,6 +59,25 @@ public class GameNetworkManager : NetworkManager
 
     // 服务端：输入队列
     private Dictionary<uint, Queue<ClientInputMessage>> inputQueues = new Dictionary<uint, Queue<ClientInputMessage>>();
+
+    // ===== 服务端：子弹管理 =====
+    // 自增ID，每颗子弹唯一，用于服务器↔客户端对应同一颗子弹
+    private uint nextBulletId = 1;
+    // 所有飞行中的子弹（服务器权威数据）
+    private Dictionary<uint, ServerBulletData> serverBullets = new Dictionary<uint, ServerBulletData>();
+    // 待销毁列表（遍历字典后统一删除，避免遍历中修改字典的老问题）
+    private List<uint> bulletsToRemove = new List<uint>();
+
+    [Header("===== 子弹设置 =====")]
+    public float bulletMaxLifetime = 3f;
+    public float defaultBulletSpeed = 30f;
+    public int bulletDamage = 10;
+
+    // ===== 客户端：子弹视觉对象 =====
+    // bulletId → 客户端的子弹 GameObject，收到 DestroyBulletMessage 时按 ID 找到并销毁
+    private Dictionary<uint, GameObject> clientBullets = new Dictionary<uint, GameObject>();
+    // 子弹预制体缓存（从 Resources/Prefabs/Bullet 加载一次）
+    private GameObject bulletPrefabCache;
 
     public override void Awake()
     {
@@ -110,6 +144,8 @@ public class GameNetworkManager : NetworkManager
 
         serverPlayers.Clear();
         inputQueues.Clear();
+        serverBullets.Clear();
+        nextBulletId = 1;
     }
 
     /// <summary>
@@ -217,8 +253,92 @@ public class GameNetworkManager : NetworkManager
             }
         }
 
-        // 2. 广播游戏状态给所有客户端
+        // 2. 更新所有子弹（移动 + 碰撞检测 + 超时销毁）
+        UpdateServerBullets();
+
+        // 3. 广播游戏状态给所有客户端
         BroadcastGameState(tick);
+    }
+
+    /// <summary>
+    /// 服务端：每Tick更新所有子弹
+    /// 移动子弹 → Raycast碰撞检测 → 超时销毁
+    /// </summary>
+    // 缓存子弹key列表，避免每Tick分配（与 tempNetIds 同理）
+    private List<uint> tempBulletIds = new List<uint>();
+
+    private void UpdateServerBullets()
+    {
+        float tickInterval = TickManager.Instance?.TickInterval ?? (1f / 30f);
+        bulletsToRemove.Clear();
+
+        // 遍历 key 快照，避免遍历中修改字典抛 InvalidOperationException
+        tempBulletIds.Clear();
+        tempBulletIds.AddRange(serverBullets.Keys);
+
+        foreach (uint bulletId in tempBulletIds)
+        {
+            ServerBulletData bullet = serverBullets[bulletId];
+
+            // 计算本Tick的飞行距离
+            float moveDistance = bullet.speed * tickInterval;
+            Vector3 oldPos = bullet.position;
+            Vector3 newPos = oldPos + bullet.direction * moveDistance;
+
+            // Raycast碰撞检测：从旧位置向飞行方向发射射线，长度=飞行距离*1.2（留余量）
+            // 这样即使子弹速度很快也不会"穿墙"
+            bool hit = false;
+            if (Physics.Raycast(oldPos, bullet.direction, out RaycastHit hitInfo, moveDistance * 1.2f))
+            {
+                // 忽略发射者自身（用 NetworkIdentity 判断）
+                NetworkIdentity hitIdentity = hitInfo.collider.GetComponentInParent<NetworkIdentity>();
+                if (hitIdentity == null || hitIdentity.netId != bullet.ownerNetId)
+                {
+                    hit = true;
+
+                    // 对 Target 造成伤害
+                    Target target = hitInfo.collider.GetComponent<Target>();
+                    if (target != null)
+                    {
+                        target.TakeDamage(bulletDamage);
+                    }
+
+                    // 广播销毁消息给所有客户端
+                    NetworkServer.SendToAll(new DestroyBulletMessage
+                    {
+                        bulletId = bullet.bulletId,
+                        hitPosition = hitInfo.point
+                    });
+
+                    bulletsToRemove.Add(bullet.bulletId);
+                    Debug.Log($"[Server] 子弹命中: id={bullet.bulletId}, hit={hitInfo.collider.name}");
+                }
+            }
+
+            if (!hit)
+            {
+                // 未命中：更新子弹位置（现在安全，因为遍历的是 tempBulletIds 而非字典）
+                bullet.position = newPos;
+                serverBullets[bulletId] = bullet;
+
+                // 超时销毁
+                if (Time.time - bullet.spawnTime >= bulletMaxLifetime)
+                {
+                    NetworkServer.SendToAll(new DestroyBulletMessage
+                    {
+                        bulletId = bullet.bulletId,
+                        hitPosition = newPos
+                    });
+                    bulletsToRemove.Add(bullet.bulletId);
+                }
+            }
+        }
+
+        // 统一删除已销毁的子弹（不在遍历中修改字典）
+        foreach (uint id in bulletsToRemove)
+        {
+            serverBullets.Remove(id);
+        }
     }
 
     /// <summary>
@@ -244,12 +364,50 @@ public class GameNetworkManager : NetworkManager
         // 处理射击
         if (input.isShooting)
         {
-            // TODO: 在服务端生成子弹，广播给所有客户端
+            ServerSpawnBullet(netId, player);
         }
 
         serverPlayers[netId] = player;
 
-        Debug.Log($"[Server] 处理输入: NetId={netId}, seq={input.sequence}, " + $"pos={player.position}, lastAcked={player.lastProcessedInput}");
+        // 高频日志已移除（每Tick每玩家都会触发，严重影响性能）
+        // 调试时可取消注释：
+        // Debug.Log($"[Server] 处理输入: NetId={netId}, seq={input.sequence}, pos={player.position}");
+    }
+
+    /// <summary>
+    /// 服务端：生成一颗子弹并广播给所有客户端
+    /// </summary>
+    private void ServerSpawnBullet(uint ownerNetId, ServerPlayerData player)
+    {
+        // 1. 根据玩家朝向计算枪口位置和射击方向
+        Quaternion rot = Quaternion.Euler(0, player.rotationY, 0);
+        Vector3 forward = rot * Vector3.forward;                          // 玩家面朝方向
+        Vector3 firePos = player.position + rot * new Vector3(0, 0.5f, 0.8f); // 枪口偏移（与SyncPlayerController中FirePoint一致）
+
+        // 2. 创建服务器子弹数据
+        uint bulletId = nextBulletId++;
+        serverBullets[bulletId] = new ServerBulletData
+        {
+            bulletId = bulletId,
+            ownerNetId = ownerNetId,
+            position = firePos,
+            direction = forward,
+            speed = defaultBulletSpeed,
+            spawnTime = Time.time
+        };
+
+        // 3. 广播 SpawnBulletMessage 给所有客户端
+        SpawnBulletMessage msg = new SpawnBulletMessage
+        {
+            bulletId = bulletId,
+            ownerNetId = ownerNetId,
+            position = firePos,
+            direction = forward,
+            speed = defaultBulletSpeed
+        };
+        NetworkServer.SendToAll(msg);
+
+        Debug.Log($"[Server] 生成子弹: id={bulletId}, owner={ownerNetId}, pos={firePos}");
     }
 
     /// <summary>
@@ -308,7 +466,9 @@ public class GameNetworkManager : NetworkManager
             }
         }
 
-        Debug.Log($"[Server] 广播状态: Tick={tick}, 玩家数={serverPlayers.Count}");
+        // 高频日志已移除（每Tick触发，30Hz = 每秒30条）
+        // 调试时可取消注释：
+        // Debug.Log($"[Server] 广播状态: Tick={tick}, 玩家数={serverPlayers.Count}");
     }
 
     // ==========================================
@@ -327,17 +487,61 @@ public class GameNetworkManager : NetworkManager
 
     /// <summary>
     /// 客户端：收到子弹生成消息
+    /// 从 Resources 加载 Bullet 预制体，实例化并设置飞行参数。
+    /// 子弹的视觉飞行由 SimpleBullet.Update 驱动（纯客户端）。
     /// </summary>
     private void OnClientSpawnBullet(SpawnBulletMessage msg)
     {
-        // TODO: 在客户端生成子弹
+        // 延迟加载预制体（只加载一次，缓存复用）
+        if (bulletPrefabCache == null)
+        {
+            bulletPrefabCache = Resources.Load<GameObject>("Prefabs/Bullet");
+            if (bulletPrefabCache == null)
+            {
+                Debug.LogError("[Client] 无法加载子弹预制体: Resources/Prefabs/Bullet");
+                return;
+            }
+        }
+
+        // 实例化子弹，朝向飞行方向
+        Quaternion rotation = Quaternion.LookRotation(msg.direction);
+        GameObject bulletObj = Instantiate(bulletPrefabCache, msg.position, rotation);
+
+        // 设置飞行参数
+        SimpleBullet bullet = bulletObj.GetComponent<SimpleBullet>();
+        if (bullet != null)
+        {
+            bullet.direction = msg.direction;
+            bullet.speed = msg.speed;
+            bullet.bulletId = msg.bulletId;
+        }
+
+        // 记录到字典，收到 DestroyBulletMessage 时按 ID 销毁
+        clientBullets[msg.bulletId] = bulletObj;
     }
 
     /// <summary>
     /// 客户端：收到子弹销毁消息
+    /// 通过 bulletId 找到客户端的子弹 GameObject 并销毁，播放命中特效。
     /// </summary>
     private void OnClientDestroyBullet(DestroyBulletMessage msg)
     {
-        // TODO: 在客户端销毁子弹，播放特效
+        if (clientBullets.TryGetValue(msg.bulletId, out GameObject bulletObj))
+        {
+            // 播放命中特效（如果预制体配置了 hitEffect）
+            if (bulletObj != null)
+            {
+                SimpleBullet bullet = bulletObj.GetComponent<SimpleBullet>();
+                if (bullet != null && bullet.hitEffect != null)
+                {
+                    GameObject fx = Instantiate(bullet.hitEffect, msg.hitPosition, Quaternion.identity);
+                    Destroy(fx, 2f); // 特效2秒后自动清理
+                }
+
+                Destroy(bulletObj);
+            }
+
+            clientBullets.Remove(msg.bulletId);
+        }
     }
 }
