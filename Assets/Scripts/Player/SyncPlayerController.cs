@@ -106,6 +106,17 @@ public class SyncPlayerController : NetworkBehaviour
         remoteTargetRotationY = transform.eulerAngles.y;
     }
 
+    void OnGUI()
+    {
+        if (!isLocalPlayer) return;
+
+        string text = $"NetId: {netId}";
+        Vector2 size = new Vector2(150, 30);
+        Rect rect = new Rect(Screen.width - size.x - 10, 10, size.x, size.y);
+
+        GUI.Label(rect, text);
+    }
+
     void OnDestroy()
     {
         if (isLocalPlayer && TickManager.Instance != null)

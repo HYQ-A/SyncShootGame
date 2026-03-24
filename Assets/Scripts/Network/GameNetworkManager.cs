@@ -248,6 +248,8 @@ public class GameNetworkManager : NetworkManager
         }
 
         serverPlayers[netId] = player;
+
+        Debug.Log($"[Server] 处理输入: NetId={netId}, seq={input.sequence}, " + $"pos={player.position}, lastAcked={player.lastProcessedInput}");
     }
 
     /// <summary>
@@ -305,6 +307,8 @@ public class GameNetworkManager : NetworkManager
                 }
             }
         }
+
+        Debug.Log($"[Server] 广播状态: Tick={tick}, 玩家数={serverPlayers.Count}");
     }
 
     // ==========================================
