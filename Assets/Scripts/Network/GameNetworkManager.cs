@@ -530,6 +530,16 @@ public class GameNetworkManager : NetworkManager
             bullet.direction = msg.direction;
             bullet.speed = msg.speed;
             bullet.bulletId = msg.bulletId;
+
+            // 通过 ownerNetId 找到发射者，获取其玩家颜色并应用到子弹
+            if (NetworkClient.spawned.TryGetValue(msg.ownerNetId, out NetworkIdentity ownerIdentity))
+            {
+                SyncPlayerController ownerCtrl = ownerIdentity.GetComponent<SyncPlayerController>();
+                if (ownerCtrl != null)
+                {
+                    bullet.SetColor(ownerCtrl.GetPlayerColor());
+                }
+            }
         }
 
         // 记录到字典，收到 DestroyBulletMessage 时按 ID 销毁

@@ -167,6 +167,16 @@ public class SyncPlayerController : NetworkBehaviour
     }
 
     /// <summary>
+    /// 获取此玩家的颜色（供外部获取，如子弹染色）
+    /// </summary>
+    public Color GetPlayerColor()
+    {
+        if (playerColorIndex >= 0 && playerColorIndex < playerColors.Length)
+            return playerColors[playerColorIndex];
+        return Color.white;
+    }
+
+    /// <summary>
     /// SyncVar hook：服务器修改 playerColorIndex 后，Mirror 自动调用此方法
     /// 参数签名必须是 (旧值, 新值)，这是 Mirror SyncVar hook 的要求
     /// </summary>
@@ -375,6 +385,11 @@ public class SyncPlayerController : NetworkBehaviour
         {
             bullet.direction = forward;
             bullet.speed = bulletSpeed;
+            // 子弹颜色 = 自己的玩家颜色
+            if (playerColorIndex >= 0 && playerColorIndex < playerColors.Length)
+            {
+                bullet.SetColor(playerColors[playerColorIndex]);
+            }
         }
     }
 

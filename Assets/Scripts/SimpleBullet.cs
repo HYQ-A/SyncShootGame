@@ -27,6 +27,21 @@ public class SimpleBullet : MonoBehaviour
 
     private float spawnTime;
 
+    /// <summary>
+    /// 设置子弹颜色（由生成方在 Instantiate 后立即调用）
+    /// 使用 MaterialPropertyBlock 覆盖颜色，不创建新材质实例
+    /// </summary>
+    public void SetColor(Color color)
+    {
+        MeshRenderer rend = GetComponentInChildren<MeshRenderer>();
+        if (rend != null)
+        {
+            MaterialPropertyBlock block = new MaterialPropertyBlock();
+            block.SetColor("_Color", color);
+            rend.SetPropertyBlock(block);
+        }
+    }
+
     void Start()
     {
         spawnTime = Time.time;
