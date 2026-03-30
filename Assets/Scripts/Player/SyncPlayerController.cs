@@ -61,6 +61,39 @@ public class SyncPlayerController : NetworkBehaviour
     [Tooltip("远程玩家平滑追赶速度（越大越快，10-20 为推荐值）")]
     public float remoteSmoothSpeed = 15f;
 
+    // ===== 玩家颜色同步 =====
+    // SyncVar：服务器设置后自动同步给所有客户端
+    // hook：客户端收到新值时调用 OnColorIndexChanged，在里面修改材质颜色
+    [SyncVar(hook = nameof(OnColorIndexChanged))]
+    private int playerColorIndex = -1;
+
+    // 100 个颜色，用 HSV 色彩空间均匀生成，确保相邻颜色区分度高
+    private static Color[] playerColors;
+
+    /// <summary>
+    /// 静态构造：生成 100 个颜色，使用黄金比例间距
+    ///
+    /// 黄金比例 ≈ 0.618034 的数学特性：
+    /// 它是"最无理"的无理数，意味着用它做乘数取模后，
+    /// 产生的序列点之间的间距永远是最大化的，不会聚集。
+    ///
+    /// 效果对比：
+    ///   顺序排列：0.00, 0.01, 0.02 → 红, 红, 红（几乎一样）
+    ///   黄金比例：0.00, 0.62, 0.24 → 红, 蓝紫, 绿（差异最大）
+    /// </summary>
+    static SyncPlayerController()
+    {
+        playerColors = new Color[100];
+        for (int i = 0; i < 100; i++)
+        {
+            // 黄金比例间距：每个新颜色都和已有颜色差异最大化
+            float hue = (i * 0.618034f) % 1f;
+            float saturation = 0.7f;     // 饱和度：不太灰，也不太刺眼
+            float value = 0.9f;          // 明度：足够亮，在深色地面上容易看清
+            playerColors[i] = Color.HSVToRGB(hue, saturation, value);
+        }
+    }
+
     void Start()
     {
         controller = GetComponent<CharacterController>();
@@ -117,6 +150,48 @@ public class SyncPlayerController : NetworkBehaviour
         // 远程玩家初始化
         remoteTargetPosition = transform.position;
         remoteTargetRotationY = transform.eulerAngles.y;
+
+        // 应用颜色（SyncVar 在 Spawn 时已同步初始值，Start 中直接应用）
+        ApplyColor(playerColorIndex);
+    }
+
+    /// <summary>
+    /// 服务器调用：设置玩家颜色索引
+    /// 修改 SyncVar 字段后，Mirror 自动同步给所有客户端并触发 hook
+    /// [Server] 标记确保此方法只能在服务器端调用
+    /// </summary>
+    [Server]
+    public void SetColorIndex(int index)
+    {
+        playerColorIndex = index;
+    }
+
+    /// <summary>
+    /// SyncVar hook：服务器修改 playerColorIndex 后，Mirror 自动调用此方法
+    /// 参数签名必须是 (旧值, 新值)，这是 Mirror SyncVar hook 的要求
+    /// </summary>
+    void OnColorIndexChanged(int oldIndex, int newIndex)
+    {
+        ApplyColor(newIndex);
+    }
+
+    /// <summary>
+    /// 将颜色应用到玩家的 MeshRenderer 上
+    /// 使用 MaterialPropertyBlock 而非直接修改 material，避免创建材质实例（节省内存）
+    /// </summary>
+    void ApplyColor(int colorIndex)
+    {
+        if (colorIndex < 0 || colorIndex >= playerColors.Length) return;
+
+        // 获取玩家身上的 MeshRenderer（包括子对象）
+        MeshRenderer[] renderers = GetComponentsInChildren<MeshRenderer>();
+        MaterialPropertyBlock block = new MaterialPropertyBlock();
+        block.SetColor("_Color", playerColors[colorIndex]);
+
+        foreach (MeshRenderer rend in renderers)
+        {
+            rend.SetPropertyBlock(block);
+        }
     }
 
     void OnGUI()

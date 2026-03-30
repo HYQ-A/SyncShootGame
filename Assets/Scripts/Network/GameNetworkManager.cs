@@ -60,6 +60,9 @@ public class GameNetworkManager : NetworkManager
     // 服务端：输入队列
     private Dictionary<uint, Queue<ClientInputMessage>> inputQueues = new Dictionary<uint, Queue<ClientInputMessage>>();
 
+    // 服务端：玩家颜色分配计数器（每加入一个玩家递增，对 100 取模循环使用）
+    private int nextPlayerColorIndex = 0;
+
     // ===== 服务端：子弹管理 =====
     // 自增ID，每颗子弹唯一，用于服务器↔客户端对应同一颗子弹
     private uint nextBulletId = 1;
@@ -192,7 +195,15 @@ public class GameNetworkManager : NetworkManager
 
             inputQueues[netId] = new Queue<ClientInputMessage>();
 
-            Debug.Log($"[Server] 玩家加入: NetId={netId}");
+            // 为新玩家分配颜色（服务器权威分配，通过 SyncVar 自动同步给所有客户端）
+            SyncPlayerController playerCtrl = conn.identity.GetComponent<SyncPlayerController>();
+            if (playerCtrl != null)
+            {
+                playerCtrl.SetColorIndex(nextPlayerColorIndex % 100);
+                nextPlayerColorIndex++;
+            }
+
+            Debug.Log($"[Server] 玩家加入: NetId={netId}, Color={nextPlayerColorIndex - 1}");
         }
     }
 
