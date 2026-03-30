@@ -492,6 +492,11 @@ public class GameNetworkManager : NetworkManager
     /// </summary>
     private void OnClientSpawnBullet(SpawnBulletMessage msg)
     {
+        // 如果是本地玩家发射的子弹，跳过生成——已经由 SyncPlayerController.SpawnLocalPredictedBullet 本地预测生成过了
+        // 只为其他玩家的子弹生成视觉对象
+        if (NetworkClient.localPlayer != null && msg.ownerNetId == NetworkClient.localPlayer.netId)
+            return;
+
         // 延迟加载预制体（只加载一次，缓存复用）
         if (bulletPrefabCache == null)
         {
