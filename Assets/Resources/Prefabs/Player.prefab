@@ -141,6 +141,7 @@ Transform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 9214924259288750110}
+  - {fileID: 3840534049404838558}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!33 &166030152777464849
@@ -274,7 +275,39 @@ MonoBehaviour:
   syncInterval: 0
   moveSpeed: 8
   bulletPrefab: {fileID: 3271522590152644219, guid: 30c4206736767364891de56c927e8a59, type: 3}
-  firePoint: {fileID: 9214924259288750110}
+  firePoint: {fileID: 3840534049404838558}
   bulletSpeed: 30
   fireRate: 0.2
   aimHeight: 0.5
+  remoteSmoothSpeed: 15
+--- !u!1 &2494012632748034252
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 3840534049404838558}
+  m_Layer: 0
+  m_Name: TruFirePos
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &3840534049404838558
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2494012632748034252}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0.2, z: 1.3}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 5290594363239294802}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
