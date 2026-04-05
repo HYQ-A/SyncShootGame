@@ -20,7 +20,11 @@ public class TickManager : MonoBehaviour
     /// <summary>
     /// 当前逻辑帧号
     /// </summary>
-    public uint CurrentTick { get; private set; }
+    [Header("===== 运行状态 =====")]
+    [Tooltip("当前帧数")]
+    [SerializeField] private uint currentTick;
+
+    public uint CurrentTick => currentTick;
 
     /// <summary>
     /// 每个Tick的时间间隔（秒）
@@ -54,7 +58,7 @@ public class TickManager : MonoBehaviour
         while (tickTimer >= TickInterval)
         {
             tickTimer -= TickInterval;
-            CurrentTick++;
+            currentTick++;
 
             // 触发Tick事件
             OnTick?.Invoke(CurrentTick);
@@ -77,6 +81,6 @@ public class TickManager : MonoBehaviour
     {
         // 简单同步：直接采用服务端Tick
         // 实际项目中需要更复杂的时钟同步算法
-        CurrentTick = serverTick;
+        currentTick = serverTick;
     }
 }
