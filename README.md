@@ -1,12 +1,8 @@
 # SyncShootGame
-
-> 基于高实时性状态同步策略的多人俯视角射击游戏客户端  
-> 湖南人文科技学院 · 软件工程专业 · 2026届本科毕业设计
-
 ![Unity](https://img.shields.io/badge/Unity-2022.3-black?logo=unity)
 ![Mirror](https://img.shields.io/badge/Mirror-Networking-blue)
 ![License](https://img.shields.io/badge/License-Private-red)
-![Uploading image.png…]()
+
 
 ---
 
