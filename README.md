@@ -3,6 +3,7 @@
 ![Mirror](https://img.shields.io/badge/Mirror-Networking-blue)
 ![License](https://img.shields.io/badge/License-Private-red)
 
+![游戏截图](Assets/ArtRes/Images/view1.png)
 
 ---
 
