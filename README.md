@@ -3,9 +3,6 @@
 ![Mirror](https://img.shields.io/badge/Mirror-Networking-blue)
 ![License](https://img.shields.io/badge/License-Private-red)
 
-![游戏截图](Assets/ArtRes/Images/view1.png)
-![游戏截图](Assets/ArtRes/Images/view2.png)
-
 ---
 
 ## 📖 项目简介
@@ -117,6 +114,13 @@ Assets/Scripts/
 | 本地输入响应延迟 | ≤ 16ms | ✅ 即时响应 |
 | 视觉抖动幅度 | ≤ 1 像素 | ✅ 指数平滑覆盖 |
 | 逻辑回滚失败率 | ≤ 0.3% | ✅ Host特判保障 |
+
+---
+
+## 🎮 游戏截图
+
+![游戏截图](Assets/ArtRes/Images/view1.png)
+![游戏截图](Assets/ArtRes/Images/view2.png)
 
 ---
 
