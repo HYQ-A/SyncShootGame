@@ -61,6 +61,12 @@ public class SyncPlayerController : NetworkBehaviour
     [Tooltip("远程玩家平滑追赶速度（越大越快，10-20 为推荐值）")]
     public float remoteSmoothSpeed = 15f;
 
+    // ===== 演示开关（静态，所有实例共享，由 DebugToggleUI 控制） =====
+    /// <summary>客户端预测开关：关闭后本地玩家不再立即执行移动，等服务端回包才更新</summary>
+    public static bool EnableClientPrediction = true;
+    /// <summary>插值平滑开关：关闭后位置直接跳变，不做 Lerp / 指数平滑</summary>
+    public static bool EnableInterpolation = true;
+
     // ===== 玩家颜色同步 =====
     // SyncVar：服务器设置后自动同步给所有客户端
     // hook：客户端收到新值时调用 OnColorIndexChanged，在里面修改材质颜色
@@ -238,17 +244,21 @@ public class SyncPlayerController : NetworkBehaviour
         // 1. 采集输入
         ClientInputMessage input = GatherInput(tick);
 
-        // 2. 发送到服务端
+        // 2. 发送到服务端（无论预测是否开启，输入始终上报，否则角色完全无法移动）
         SendInputToServer(input);
 
-        // 3. 本地预测执行（立即移动，不等服务器回包）
-        ApplyInputLocally(input);
+        // 3. 本地预测执行（开关控制）
+        //    开启：立即移动，不等服务器回包 → 手感流畅
+        //    关闭：不执行本地移动，等服务端状态回来才更新 → 明显延迟感
+        if (EnableClientPrediction || isServer)
+        {
+            ApplyInputLocally(input);
+        }
 
-        // 4. 本地射击预测：立即生成视觉子弹，不等服务器
-        //    这样玩家点击鼠标后零延迟看到子弹飞出
-        //    服务器的 SpawnBulletMessage 到达后，客户端通过 OnClientSpawnBullet 再生成一颗
-        //    （两颗子弹会同时飞行，但间距极小，视觉上可接受）
-        if (input.isShooting)
+        // 4. 本地射击预测（开关控制）
+        //    开启：零延迟出弹
+        //    关闭：等服务端 SpawnBulletMessage 才看到子弹
+        if (EnableClientPrediction && input.isShooting)
         {
             SpawnLocalPredictedBullet();
         }
@@ -263,8 +273,12 @@ public class SyncPlayerController : NetworkBehaviour
 
         if (isLocalPlayer)
         {
-            // 本地玩家：在前后两个逻辑位置之间插值渲染
-            Vector3 renderPos = Vector3.Lerp(logicPositionPrev, logicPositionCurr, alpha);
+            // 本地玩家渲染位置
+            //   插值开启：在前后两个逻辑位置之间 Lerp，画面丝滑
+            //   插值关闭：直接跳到当前逻辑位置，画面以 30Hz 跳变（卡顿感）
+            Vector3 renderPos = EnableInterpolation
+                ? Vector3.Lerp(logicPositionPrev, logicPositionCurr, alpha)
+                : logicPositionCurr;
             controller.enabled = false;
             transform.position = renderPos;
             controller.enabled = true;
@@ -274,13 +288,22 @@ public class SyncPlayerController : NetworkBehaviour
         }
         else if (hasRemoteState)
         {
-            // 远程玩家：指数平滑逼近目标
-            // 每帧从当前位置向目标靠近一个比例，天然抗消息突发
-            float t = remoteSmoothSpeed * Time.deltaTime;
-            transform.position = Vector3.Lerp(transform.position, remoteTargetPosition, t);
-            float currentRotY = transform.eulerAngles.y;
-            float newRotY = Mathf.LerpAngle(currentRotY, remoteTargetRotationY, t);
-            transform.rotation = Quaternion.Euler(0, newRotY, 0);
+            if (EnableInterpolation)
+            {
+                // 远程玩家：指数平滑逼近目标
+                // 每帧从当前位置向目标靠近一个比例，天然抗消息突发
+                float t = remoteSmoothSpeed * Time.deltaTime;
+                transform.position = Vector3.Lerp(transform.position, remoteTargetPosition, t);
+                float currentRotY = transform.eulerAngles.y;
+                float newRotY = Mathf.LerpAngle(currentRotY, remoteTargetRotationY, t);
+                transform.rotation = Quaternion.Euler(0, newRotY, 0);
+            }
+            else
+            {
+                // 插值关闭：直接跳到服务端位置，画面明显跳变
+                transform.position = remoteTargetPosition;
+                transform.rotation = Quaternion.Euler(0, remoteTargetRotationY, 0);
+            }
         }
     }
 
@@ -428,22 +451,30 @@ public class SyncPlayerController : NetworkBehaviour
                 // === 纯客户端：服务端和解（Server Reconciliation） ===
                 lastAckedSequence = msg.yourLastProcessedInput;
 
-                // 1. 以服务端权威位置为基准
-                Vector3 reconciledPos = playerState.position;
-
-                // 2. 重演所有未被服务端确认的输入
-                float tickInterval = TickManager.Instance != null ? TickManager.Instance.TickInterval : (1f / 30f);
-                for (uint seq = lastAckedSequence + 1; seq < inputSequence; seq++)
+                if (EnableClientPrediction)
                 {
-                    ClientInputMessage buffered = inputBuffer[seq % inputBuffer.Length];
-                    if (buffered.sequence != seq) break;
+                    // 预测开启：以权威位置为基准，重演未确认输入，保持流畅
+                    Vector3 reconciledPos = playerState.position;
 
-                    Vector3 moveDir = new Vector3(buffered.moveX, 0, buffered.moveY).normalized;
-                    reconciledPos += moveDir * moveSpeed * tickInterval;
+                    float tickInterval = TickManager.Instance != null ? TickManager.Instance.TickInterval : (1f / 30f);
+                    for (uint seq = lastAckedSequence + 1; seq < inputSequence; seq++)
+                    {
+                        ClientInputMessage buffered = inputBuffer[seq % inputBuffer.Length];
+                        if (buffered.sequence != seq) break;
+
+                        Vector3 moveDir = new Vector3(buffered.moveX, 0, buffered.moveY).normalized;
+                        reconciledPos += moveDir * moveSpeed * tickInterval;
+                    }
+
+                    logicPositionCurr = reconciledPos;
                 }
-
-                // 3. 只修正 logicPositionCurr，不动 logicPositionPrev
-                logicPositionCurr = reconciledPos;
+                else
+                {
+                    // 预测关闭：直接采用服务端权威位置，不做重演
+                    // 玩家会明显感受到操作延迟（输入→服务端处理→回包→才看到移动）
+                    logicPositionPrev = logicPositionCurr;
+                    logicPositionCurr = playerState.position;
+                }
             }
             else
             {
